@@ -1,3 +1,4 @@
+
 import streamlit as st
 import requests
 
@@ -7,35 +8,50 @@ st.set_page_config(
     layout="centered"
 )
 
-st.title("🧪 حاسبة النشاط الحيوي للمركبات")
-st.write("أدخل اسم المركب للبحث عنه في PubChem وتحليل خصائصه وحساب قاعدة Lipinski.")
+st.title("🧪 حاسبة النشاط الحيوي وتصميم الأدوية")
+st.write("ابحث باسم المركب أو صيغة SMILES لجلب الخصائص الكيميائية من PubChem وتقييم قواعد Lipinski & Veber.")
 
 st.markdown("---")
 
-compound_name = st.text_input("اسم المركب (باللغة الإنجليزية مثل: Aspirin, Caffeine):")
+# خيار نوع البحث
+search_type = st.radio("اختر طريقة البحث:", ("اسم المركب (Name)", "الصيغة الكيميائية (SMILES)"))
+query = st.text_input("أدخل المدخلات (مثال: Aspirin أو CC(=O)OC1=CC=CC=C1C(=O)O):")
 
-if st.button("تحليل المركب", type="primary"):
-    if not compound_name.strip():
-        st.warning("الرجاء إدخال اسم المركب أولاً.")
+if st.button("تحليل المركب الشامل", type="primary"):
+    if not query.strip():
+        st.warning("الرجاء إدخال اسم المركب أو صيغة SMILES أولاً.")
     else:
-        with st.spinner("جاري البحث عن المركب وجلب الخصائص من PubChem..."):
+        with st.spinner("جاري جلب البيانات والصورة من PubChem..."):
             try:
+                # تحديد الرابط بناءً على نوع البحث
+                search_by = "name" if "اسم" in search_type else "smiles"
+                
                 # PubChem API Call
-                url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{compound_name.strip()}/property/MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,Title/JSON"
+                url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{query.strip()}/property/MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,TPSA,RotatableBondCount,Title/JSON"
                 response = requests.get(url)
                 
                 if response.status_code == 200:
                     data = response.json()
                     props = data['PropertyTable']['Properties'][0]
+                    cid = props.get('CID', None)
                     
-                    # التحويل الصريح للأرقام لتفادي أخطاء الأنواع
+                    # تحويل الأرقام لتفادي أخطاء الأنواع
                     mw = float(props.get('MolecularWeight', 0))
                     logp = float(props.get('XLogP', 0))
                     hbd = int(props.get('HBondDonorCount', 0))
                     hba = int(props.get('HBondAcceptorCount', 0))
-                    title = props.get('Title', compound_name)
+                    tpsa = float(props.get('TPSA', 0))
+                    rot_bonds = int(props.get('RotatableBondCount', 0))
+                    title = props.get('Title', query)
 
                     st.success(f"تم العثور على المركب: {title}")
+
+                    # عرض الهيكل الكيميائي 2D
+                    st.subheader("🖼️ التركيب البنائي للمركب (2D Structure):")
+                    img_url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{query.strip()}/PNG?image_size=300x300"
+                    st.image(img_url, caption=f"الشكل البنائي لـ {title}", use_column_width=False)
+
+                    st.markdown("---")
                     
                     # Display Properties
                     st.subheader("📊 الخصائص الكيميائية المستخرجة:")
@@ -43,37 +59,45 @@ if st.button("تحليل المركب", type="primary"):
                     with col1:
                         st.metric("الوزن الجزئي (MW)", f"{mw} g/mol")
                         st.metric("معامل التوزيع (LogP)", logp)
+                        st.metric("المساحة القطبية (TPSA)", f"{tpsa} Å²")
                     with col2:
                         st.metric("متبرعات هيدروجين (HBD)", hbd)
                         st.metric("مستقبلات هيدروجين (HBA)", hba)
+                        st.metric("روابط قابلة للدوران", rot_bonds)
 
                     st.markdown("---")
-                    st.subheader("⚖️ تقييم قاعدة Lipinski (Rule of Five):")
+                    st.subheader("⚖️ 1. تقييم قاعدة Lipinski (Rule of Five):")
 
                     # Lipinski Rules Check
-                    c1 = mw <= 500
-                    c2 = logp <= 5
-                    c3 = hbd <= 5
-                    c4 = hba <= 10
+                    c1, c2, c3, c4 = mw <= 500, logp <= 5, hbd <= 5, hba <= 10
+                    v_lipinski = sum([not c1, not c2, not c3, not c4])
 
-                    violations = 0
-                    if not c1: violations += 1
-                    if not c2: violations += 1
-                    if not c3: violations += 1
-                    if not c4: violations += 1
-
-                    # Results display
                     st.write(f"• الوزن الجزئي (<= 500): {'✅' if c1 else '❌'}")
                     st.write(f"• معامل LogP (<= 5): {'✅' if c2 else '❌'}")
                     st.write(f"• عدد HBD (<= 5): {'✅' if c3 else '❌'}")
                     st.write(f"• عدد HBA (<= 10): {'✅' if c4 else '❌'}")
 
-                    if violations <= 1:
-                        st.success(f"🎉 المركب يحقق شروط Lipinski! (عدد المخالفات: {violations})")
+                    if v_lipinski <= 1:
+                        st.success(f"🎉 مطابق لقاعدة Lipinski (عدد المخالفات: {v_lipinski})")
                     else:
-                        st.error(f"⚠️ المركب غير مثالي كدواء طبقاً لقاعدة Lipinski (عدد المخالفات: {violations})")
+                        st.error(f"⚠️ غير مثالي طبقاً لـ Lipinski (عدد المخالفات: {v_lipinski})")
+
+                    st.markdown("---")
+                    st.subheader("📐 2. تقييم قاعدة Veber (Veber's Rule):")
+
+                    # Veber Rules Check (Rotatable Bonds <= 10 & TPSA <= 140)
+                    v1, v2 = rot_bonds <= 10, tpsa <= 140
+                    v_veber = sum([not v1, not v2])
+
+                    st.write(f"• روابط قابلة للدوران (<= 10): {'✅' if v1 else '❌'}")
+                    st.write(f"• المساحة السطحية القطبية TPSA (<= 140 Å²): {'✅' if v2 else '❌'}")
+
+                    if v_veber == 0:
+                        st.success("🎉 ممتاز! المركب يحقق قاعدة Veber للامتصاص المعوي الجيد.")
+                    else:
+                        st.warning("⚠️ المركب يخالف قاعدة Veber وقد يواجه صعوبة في الامتصاص.")
 
                 else:
-                    st.error("❌ لم يتم العثور على المركب في PubChem. يرجى التأكد من كتابة الاسم باللغة الإنجليزية بشكل صحيح.")
+                    st.error("❌ لم يتم العثور على المركب. يرجى التأكد من كتابة الاسم أو صيغة SMILES بشكل صحيح.")
             except Exception as e:
                 st.error(f"حدث خطأ أثناء معالجة البيانات: {e}")
