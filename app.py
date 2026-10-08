@@ -10,23 +10,34 @@ st.set_page_config(
 )
 
 st.title("🧪 منصة التحليل الكيميائي وتقييم الأدوية المتقدمة")
-st.write("أداة شائعة لتحليل الخصائص الكيميائية، قواعد Lipinski & Veber، عرض المجسمات 3D، والمقارنة بين المركبات.")
+st.write("أداة شاملة لتحليل الخصائص الكيميائية، قواعد Lipinski & Veber، عرض المجسمات 3D، والمقارنة بين المركبات.")
 
 st.markdown("---")
 
-# إنشاء تبويبات داخل التطبيق
 tab1, tab2 = st.tabs(["🔬 التحليل الفردي و 3D", "⚖️ مقارنة مركبين جنباً إلى جنب"])
 
 # ----------------- وظيفة جلب البيانات من PubChem -----------------
 def get_pubchem_data(query, search_type):
     search_by = "name" if "اسم" in search_type else "smiles"
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{query.strip()}/property/MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,TPSA,RotatableBondCount,Title,CID/JSON"
-    res = requests.get(url)
+    q = query.strip()
+    
+    # 1. جلب الخصائص الكيميائية
+    url_props = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{q}/property/MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,TPSA,RotatableBondCount,Title/JSON"
+    res = requests.get(url_props)
+    
     if res.status_code == 200:
         props = res.json()['PropertyTable']['Properties'][0]
+        cid = props.get('CID', None)
+        
+        # إذا لم يرجع الـ CID نجلبه بطلب منفصل
+        if not cid:
+            res_cid = requests.get(f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{q}/cids/JSON")
+            if res_cid.status_code == 200:
+                cid = res_cid.json()['IdentifierList']['CID'][0]
+
         return {
-            'cid': props.get('CID'),
-            'title': props.get('Title', query),
+            'cid': cid,
+            'title': props.get('Title', q),
             'mw': float(props.get('MolecularWeight', 0)),
             'logp': float(props.get('XLogP', 0)),
             'hbd': int(props.get('HBondDonorCount', 0)),
@@ -42,7 +53,7 @@ with tab1:
     with col_in1:
         search_type = st.radio("طريقة البحث:", ("اسم المركب (Name)", "الصيغة الكيميائية (SMILES)"), key="t1_type")
     with col_in2:
-        query = st.text_input("أدخل اسم المركب أو SMILES (مثال: Aspirin, Caffeine):", key="t1_query")
+        query = st.text_input("أدخل اسم المركب أو SMILES (مثال: Aspirin, Caffeine, Atorvastatin):", key="t1_query")
 
     if st.button("تحليل المركب", type="primary", key="btn_t1"):
         if not query.strip():
@@ -63,7 +74,6 @@ with tab1:
 
                     with c_right:
                         st.subheader("🧊 التجسيم 3D التفاعلي")
-                        # Embed 3D viewer using 3Dmol.js via HTML
                         html_3d = f"""
                         <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
                         <div id="container-01" style="height: 300px; width: 100%; position: relative;"></div>
@@ -129,7 +139,7 @@ with tab1:
                     )
 
                 else:
-                    st.error("❌ لم يتم العثور على المركب في PubChem.")
+                    st.error("❌ لم يتم العثور على المركب في PubChem. تأكد من الاسم وافصل أي مسافات زائدة.")
 
 # ================= TAB 2: مقارنة مركبين =================
 with tab2:
@@ -147,7 +157,6 @@ with tab2:
             d2 = get_pubchem_data(comp2, "اسم المركب")
 
             if d1 and d2:
-                # Comparison Table
                 df_comp = pd.DataFrame({
                     "الخاصية": ["اسم المركب", "الوزن الجزئي (MW)", "معامل LogP", "متبرعات (HBD)", "مستقبلات (HBA)", "المساحة القطبية (TPSA)", "الروابط القابلة للدوران"],
                     f"المركب الأول ({d1['title']})": [d1['title'], d1['mw'], d1['logp'], d1['hbd'], d1['hba'], d1['tpsa'], d1['rot_bonds']],
