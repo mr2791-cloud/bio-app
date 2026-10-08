@@ -28,10 +28,11 @@ if st.button("تحليل المركب", type="primary"):
                     data = response.json()
                     props = data['PropertyTable']['Properties'][0]
                     
-                    mw = props.get('MolecularWeight', 0.0)
-                    logp = props.get('XLogP', 0.0)
-                    hbd = props.get('HBondDonorCount', 0)
-                    hba = props.get('HBondAcceptorCount', 0)
+                    # التحويل الصريح للأرقام لتفادي أخطاء الأنواع
+                    mw = float(props.get('MolecularWeight', 0))
+                    logp = float(props.get('XLogP', 0))
+                    hbd = int(props.get('HBondDonorCount', 0))
+                    hba = int(props.get('HBondAcceptorCount', 0))
                     title = props.get('Title', compound_name)
 
                     st.success(f"تم العثور على المركب: {title}")
@@ -75,4 +76,4 @@ if st.button("تحليل المركب", type="primary"):
                 else:
                     st.error("❌ لم يتم العثور على المركب في PubChem. يرجى التأكد من كتابة الاسم باللغة الإنجليزية بشكل صحيح.")
             except Exception as e:
-                st.error(f"حدث خطأ أثناء الاتصال بـ PubChem: {e}")
+                st.error(f"حدث خطأ أثناء معالجة البيانات: {e}")
