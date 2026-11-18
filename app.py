@@ -2,15 +2,17 @@ import streamlit as st
 import requests
 import pandas as pd
 import plotly.graph_objects as go
-from urllib.parse import quote
+from io import BytesIO
 
-# 1. إعدادات الصفحة (يجب أن تكون أول أمر في Streamlit)
-st.set_page_config(
-    page_title="حاسبة النشاط الحيوي للمركبات",
-    page_icon="🧪",
-    layout="wide"
-)
+# ------------------ محاولة استيراد RDKit (اختياري) ------------------
+try:
+    from rdkit import Chem
+    from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors
+    RDKIT_AVAILABLE = True
+except Exception:
+    RDKIT_AVAILABLE = False
 
+# ------------------ إعدادات الصفحة ------------------
 hide_streamlit_style = """
 <style>
 #MainMenu {visibility: hidden;}
@@ -20,42 +22,36 @@ header {visibility: hidden;}
 """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
 
-# ------------------ محاولة استيراد RDKit (اختياري) ------------------
-try:
-    from rdkit import Chem
-    from rdkit.Chem import Crippen
-    RDKIT_AVAILABLE = True
-except Exception:
-    RDKIT_AVAILABLE = False
+st.set_page_config(
+    page_title="حاسبة النشاط الحيوي للمركبات",
+    page_icon="🧪",
+    layout="wide"
+)
 
 # ------------------ دوال مساعدة ------------------
+
 PROPS = "MolecularWeight,XLogP,HBondDonorCount,HBondAcceptorCount,TPSA,RotatableBondCount,Title"
 
 def fetch_pubchem(query, search_by="name"):
-    """جلب الخصائص من PubChem مع تشفير الرابط."""
-    encoded_query = quote(query, safe='')
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{encoded_query}/property/{PROPS}/JSON"
-    try:
-        r = requests.get(url, timeout=30)
-        if r.status_code != 200:
-            return None
-        p = r.json()["PropertyTable"]["Properties"][0]
-        return {
-            "title": p.get("Title", query),
-            "mw": float(p.get("MolecularWeight", 0) or 0),
-            "logp": float(p.get("XLogP", 0) or 0),
-            "hbd": int(p.get("HBondDonorCount", 0) or 0),
-            "hba": int(p.get("HBondAcceptorCount", 0) or 0),
-            "tpsa": float(p.get("TPSA", 0) or 0),
-            "rot": int(p.get("RotatableBondCount", 0) or 0),
-        }
-    except Exception:
+    """جلب الخصائص من PubChem."""
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{query}/property/{PROPS}/JSON"
+    r = requests.get(url, timeout=30)
+    if r.status_code != 200:
         return None
+    p = r.json()["PropertyTable"]["Properties"][0]
+    return {
+        "title": p.get("Title", query),
+        "mw": float(p.get("MolecularWeight", 0) or 0),
+        "logp": float(p.get("XLogP", 0) or 0),
+        "hbd": int(p.get("HBondDonorCount", 0) or 0),
+        "hba": int(p.get("HBondAcceptorCount", 0) or 0),
+        "tpsa": float(p.get("TPSA", 0) or 0),
+        "rot": int(p.get("RotatableBondCount", 0) or 0),
+    }
 
 def fetch_smiles(query, search_by="name"):
     """جلب SMILES من PubChem لعمل PAINS check."""
-    encoded_query = quote(query, safe='')
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{encoded_query}/property/CanonicalSMILES/JSON"
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{query}/property/CanonicalSMILES/JSON"
     try:
         r = requests.get(url, timeout=30)
         if r.status_code == 200:
@@ -65,6 +61,7 @@ def fetch_smiles(query, search_by="name"):
     return ""
 
 def compute_mr_from_smiles(smiles):
+    """Molar Refractivity — لو RDKit متاح."""
     if RDKIT_AVAILABLE and smiles:
         mol = Chem.MolFromSmiles(smiles)
         if mol:
@@ -72,6 +69,7 @@ def compute_mr_from_smiles(smiles):
     return None
 
 # ------------------ قواعد التقييم ------------------
+
 def lipinski_rule(props):
     checks = {
         "MW ≤ 500": props["mw"] <= 500,
@@ -99,11 +97,14 @@ def veber_rule(props):
     return checks, violations, status, color
 
 def ghose_rule(props, mr):
+    # Ghose: 160 ≤ MW ≤ 480, -0.4 ≤ LogP ≤ 5.6, 40 ≤ MR ≤ 130, atoms 20–70
     checks = {
         "160 ≤ MW ≤ 480": 160 <= props["mw"] <= 480,
         "-0.4 ≤ LogP ≤ 5.6": -0.4 <= props["logp"] <= 5.6,
         "MR بين 40 و 130": (mr is not None and 40 <= mr <= 130) if mr else None,
     }
+    # عدد الذرات — تقدير من MW لو RDKit مش متاح
+    atoms = None
     violations = sum(1 for v in checks.values() if v is False)
     if any(v is None for v in checks.values()):
         status, color = "غير مكتمل (RDKit غير متاح)", "gray"
@@ -113,6 +114,7 @@ def ghose_rule(props, mr):
     return checks, violations, status, color
 
 def egan_rule(props):
+    # Egan: TPSA ≤ 131.6 و -0.4 ≤ LogP ≤ 5.6
     checks = {
         "TPSA ≤ 131.6 Å²": props["tpsa"] <= 131.6,
         "-0.4 ≤ LogP ≤ 5.6": -0.4 <= props["logp"] <= 5.6,
@@ -123,6 +125,8 @@ def egan_rule(props):
     return checks, violations, status, color
 
 # ------------------ PAINS ------------------
+
+# SMARTS مبسطة لمجموعات PAINS شائعة (ليست شاملة، لكنها بتغطي أشهر الأنماط)
 PAINS_PATTERNS = {
     "Catechol": "c1ccccc1(O)O",
     "Quinone": "O=C1C=CC(=O)C=C1",
@@ -135,6 +139,7 @@ PAINS_PATTERNS = {
 }
 
 def pains_check(smiles):
+    """يرجع قائمة الأنماط المطابقة."""
     if not smiles:
         return []
     if RDKIT_AVAILABLE:
@@ -148,6 +153,7 @@ def pains_check(smiles):
                 hits.append(name)
         return hits
     else:
+        # fallback heuristic بسيط على SMILES نصيًا
         hits = []
         s = smiles.upper()
         if "C=O" in s and "C=C" in s: hits.append("Michael acceptor (تقريبي)")
@@ -156,22 +162,27 @@ def pains_check(smiles):
         return hits
 
 # ------------------ Radar Chart ------------------
+
 def make_radar(props):
+    # نورم (0–1) لكل خاصية، بحيث 1 = ممتاز (داخل الحد)
+    # بنستخدم نسب من الحدود الآمنة
     metrics = [
-        ("MW", props["mw"], 500),
-        ("LogP", props["logp"], 5),
-        ("HBD", props["hbd"], 5),
-        ("HBA", props["hba"], 10),
-        ("TPSA", props["tpsa"], 140),
-        ("RotBonds", props["rot"], 10),
+        ("MW", props["mw"], 500, "lower"),
+        ("LogP", props["logp"], 5, "lower"),
+        ("HBD", props["hbd"], 5, "lower"),
+        ("HBA", props["hba"], 10, "lower"),
+        ("TPSA", props["tpsa"], 140, "lower"),
+        ("RotBonds", props["rot"], 10, "lower"),
     ]
     labels, values = [], []
-    for name, val, limit in metrics:
+    for name, val, limit, _ in metrics:
         labels.append(name)
+        # قيمة معيارية: 1 لو داخل الحد، تنزل تدريجيًا لو تجاوز
         if val <= limit:
             values.append(1.0)
         else:
             values.append(max(0.0, limit / val if val else 1.0))
+    # اغلاق الدائرة
     labels_closed = labels + [labels[0]]
     values_closed = values + [values[0]]
 
@@ -183,6 +194,7 @@ def make_radar(props):
         name='المركب',
         line=dict(color='royalblue'),
     ))
+    # دائرة الحدود (كلها 1)
     fig.add_trace(go.Scatterpolar(
         r=[1.0] * len(labels_closed),
         theta=labels_closed,
@@ -194,13 +206,14 @@ def make_radar(props):
     fig.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0, 1.2])),
         showlegend=True,
-        height=450,
+        height=500,
         margin=dict(l=40, r=40, t=40, b=40),
     )
     return fig
 
 # ------------------ رسم وتقييم مركب ------------------
-def render_compound(query, search_by):
+
+def render_compound(query, search_by, prefix=""):
     with st.spinner(f"جاري جلب بيانات {query}..."):
         props = fetch_pubchem(query, search_by)
         if not props:
@@ -214,13 +227,12 @@ def render_compound(query, search_by):
         st.success(f"✅ تم العثور على: {props['title']}")
 
         col_img, col_chart = st.columns([1, 1.4])
-        encoded_query = quote(query, safe='')
         with col_img:
             st.subheader("🖼️ التركيب البنائي")
             st.image(
-                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{encoded_query}/PNG?image_size=300x300",
+                f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/{search_by}/{query}/PNG?image_size=300x300",
                 caption=props["title"],
-                use_container_width=True,
+                use_column_width=True,
             )
         with col_chart:
             st.subheader("📡 Radar Chart (المنطقة الآمنة)")
@@ -237,6 +249,7 @@ def render_compound(query, search_by):
         if mr:
             st.caption(f"Molar Refractivity (MR) = {mr:.2f}")
 
+        # ----- Tabs للتقييم -----
         tab1, tab2, tab3, tab4 = st.tabs(["Lipinski", "Veber", "Ghose", "Egan"])
 
         with tab1:
@@ -244,6 +257,7 @@ def render_compound(query, search_by):
             for k, ok in checks.items():
                 st.write(f"{'✅' if ok else '❌'} {k}")
             st.markdown(f"**النتيجة:** :{color}[{status}] (مخالفات: {v})")
+            # تفسير سبب الرفض
             failed = [k for k, ok in checks.items() if not ok]
             if failed:
                 st.warning(f"أسباب الرفض: {', '.join(failed)}")
@@ -267,6 +281,7 @@ def render_compound(query, search_by):
                 st.write(f"{'✅' if ok else '❌'} {k}")
             st.markdown(f"**النتيجة:** :{color}[{status}]")
 
+        # ----- PAINS -----
         st.markdown("### 🚨 PAINS Filter")
         hits = pains_check(smiles)
         if hits:
@@ -277,7 +292,8 @@ def render_compound(query, search_by):
 
         return props
 
-# ------------------ واجهة التطبيق ------------------
+# ------------------ تطبيق Streamlit ------------------
+
 st.title("🧪 حاسبة النشاط الحيوي وتصميم الأدوية")
 st.write("تحليل متقدم للمركبات مع Radar Chart، فلاتر PAINS، قواعد Ghose/Egan، مقارنة، وفحص بالجملة.")
 
@@ -286,6 +302,9 @@ mode = st.sidebar.radio(
     ["🔬 مركب واحد", "⚖️ مقارنة مركبين", "📦 فحص بالجملة (Batch)"],
 )
 
+# =====================================================
+# الوضع 1: مركب واحد
+# =====================================================
 if mode == "🔬 مركب واحد":
     search_type = st.radio("طريقة البحث:", ("الاسم", "SMILES"), horizontal=True)
     search_by = "name" if search_type == "الاسم" else "smiles"
@@ -294,6 +313,9 @@ if mode == "🔬 مركب واحد":
     if st.button("🔍 تحليل المركب", type="primary") and query.strip():
         render_compound(query.strip(), search_by)
 
+# =====================================================
+# الوضع 2: مقارنة مركبين
+# =====================================================
 elif mode == "⚖️ مقارنة مركبين":
     st.subheader("⚖️ مقارنة مركبين (Side-by-Side)")
     c1, c2 = st.columns(2)
@@ -321,6 +343,9 @@ elif mode == "⚖️ مقارنة مركبين":
             })
             st.dataframe(df, use_container_width=True)
 
+# =====================================================
+# الوضع 3: فحص بالجملة
+# =====================================================
 elif mode == "📦 فحص بالجملة (Batch)":
     st.subheader("📦 فحص بالجملة (حتى 50 مركب)")
     st.caption("ارفع ملف CSV/Excel فيه عمود اسمه 'name' (أو 'smiles').")
@@ -342,15 +367,15 @@ elif mode == "📦 فحص بالجملة (Batch)":
                 st.error("❌ الملف لازم يحتوي على عمود باسم name أو smiles.")
                 st.stop()
 
-            queries = df[col].dropna().astype(str).tolist()[:50]
+            queries = df[col].astype(str).tolist()[:50]
             search_by = "smiles" if col.lower() == "smiles" else "name"
 
             results = []
             progress = st.progress(0)
             for i, q in enumerate(queries):
-                p = fetch_pubchem(q.strip(), search_by)
+                p = fetch_pubchem(q, search_by)
                 if p:
-                    smi = fetch_smiles(q.strip(), search_by)
+                    smi = fetch_smiles(q, search_by)
                     hits = pains_check(smi)
                     _, lip_v, lip_s, _ = lipinski_rule(p)
                     _, veb_v, veb_s, _ = veber_rule(p)
@@ -377,6 +402,7 @@ elif mode == "📦 فحص بالجملة (Batch)":
             st.subheader("📊 نتائج الفحص")
             st.dataframe(out_df, use_container_width=True)
 
+            # تحميل CSV
             csv_bytes = out_df.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
                 "⬇️ تحميل النتائج (CSV)",
